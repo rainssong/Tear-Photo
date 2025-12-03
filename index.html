@@ -1,0 +1,477 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>撕纸效果生成器</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;700&display=swap');
+        
+        body {
+            font-family: 'Noto Sans SC', sans-serif;
+            background-color: #1a1a1a;
+            color: #e5e5e5;
+            overflow-x: hidden; 
+            /* 防止拖动时触发页面滚动 */
+            overscroll-behavior: none;
+        }
+
+        /* 自定义虚线边框用于上传区域 */
+        .upload-box {
+            background-image: url("data:image/svg+xml,%3csvg width='100%25' height='100%25' xmlns='http://www.w3.org/2000/svg'%3e%3crect width='100%25' height='100%25' fill='none' rx='10' ry='10' stroke='%23555' stroke-width='2' stroke-dasharray='10%2c 10' stroke-dashoffset='0' stroke-linecap='square'/%3e%3c/svg%3e");
+            transition: all 0.3s ease;
+        }
+        .upload-box:hover {
+            background-color: rgba(255, 255, 255, 0.05);
+            background-image: url("data:image/svg+xml,%3csvg width='100%25' height='100%25' xmlns='http://www.w3.org/2000/svg'%3e%3crect width='100%25' height='100%25' fill='none' rx='10' ry='10' stroke='%23888' stroke-width='2' stroke-dasharray='10%2c 10' stroke-dashoffset='0' stroke-linecap='square'/%3e%3c/svg%3e");
+        }
+
+        /* 隐藏的文件输入 */
+        .file-input {
+            display: none;
+        }
+
+        /* 舞台容器 */
+        #canvas-stage {
+            position: relative;
+            box-shadow: 0 20px 50px -12px rgba(0, 0, 0, 0.5);
+            margin: 0 auto;
+            /* 初始尺寸，会被JS覆盖 */
+            max-width: 100%;
+            display: none; /* 上传前隐藏 */
+        }
+
+        canvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            z-index: 10;
+            touch-action: none; /* 禁止浏览器默认触摸行为 */
+            cursor: crosshair;
+            /* 新增：使用CSS滤镜来实现纸张的真实投影，而不是在Canvas里画 */
+            /* 这样投影会随着纸张的撕裂形状自动更新，且不会在重复涂抹时变黑 */
+            filter: drop-shadow(2px 4px 6px rgba(0, 0, 0, 0.5));
+        }
+
+        #bottom-layer {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            z-index: 1;
+            pointer-events: none;
+        }
+        
+        .brush-cursor {
+            pointer-events: none;
+            position: fixed;
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            border: 2px solid rgba(255,255,255,0.8);
+            transform: translate(-50%, -50%);
+            z-index: 9999;
+            mix-blend-mode: difference;
+            display: none;
+        }
+    </style>
+</head>
+<body class="min-h-screen flex flex-col items-center py-10 px-4">
+
+    <!-- 标题区 -->
+    <header class="text-center mb-8">
+        <h1 class="text-3xl md:text-4xl font-bold mb-2 text-white tracking-wider">图片撕纸效果</h1>
+        <p class="text-gray-400 text-sm md:text-base">上传两张图片，拖动鼠标模拟撕掉表层照片</p>
+    </header>
+
+    <!-- 上传控制区 -->
+    <div id="upload-controls" class="grid grid-cols-1 md:grid-cols-2 gap-6 w-full max-w-4xl mb-8">
+        <!-- 顶部图片 (被撕的) -->
+        <div class="flex flex-col items-center">
+            <label class="block mb-2 text-sm font-semibold text-gray-300">1. 表层图片 (将被撕开)</label>
+            <div class="upload-box w-full h-48 rounded-xl flex flex-col items-center justify-center cursor-pointer relative overflow-hidden" onclick="document.getElementById('input-top').click()">
+                <img id="preview-top" class="absolute inset-0 w-full h-full object-contain p-2 opacity-50 pointer-events-none" />
+                <div class="z-10 flex flex-col items-center text-gray-400">
+                    <svg class="w-8 h-8 mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"></path></svg>
+                    <span id="text-top">点击上传表层图</span>
+                </div>
+                <input type="file" id="input-top" class="file-input" accept="image/*" onchange="handleFileSelect(this, 'top')">
+            </div>
+        </div>
+
+        <!-- 底部图片 (显示的) -->
+        <div class="flex flex-col items-center">
+            <label class="block mb-2 text-sm font-semibold text-gray-300">2. 底层图片 (内容物)</label>
+            <div class="upload-box w-full h-48 rounded-xl flex flex-col items-center justify-center cursor-pointer relative overflow-hidden" onclick="document.getElementById('input-bottom').click()">
+                <img id="preview-bottom" class="absolute inset-0 w-full h-full object-contain p-2 opacity-50 pointer-events-none" />
+                <div class="z-10 flex flex-col items-center text-gray-400">
+                    <svg class="w-8 h-8 mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"></path></svg>
+                    <span id="text-bottom">点击上传底层图</span>
+                </div>
+                <input type="file" id="input-bottom" class="file-input" accept="image/*" onchange="handleFileSelect(this, 'bottom')">
+            </div>
+        </div>
+    </div>
+
+    <!-- 启动按钮 -->
+    <button id="start-btn" onclick="initStage()" disabled class="mb-8 px-8 py-3 bg-blue-600 hover:bg-blue-500 disabled:bg-gray-700 disabled:cursor-not-allowed text-white font-bold rounded-full transition shadow-lg transform hover:scale-105 active:scale-95">
+        生成撕纸画板
+    </button>
+
+    <!-- 主舞台区域 -->
+    <div id="stage-container" class="w-full max-w-5xl flex justify-center relative hidden">
+        <div id="canvas-stage">
+            <img id="bottom-layer" alt="Background Layer">
+            <canvas id="top-layer"></canvas>
+            
+            <!-- 提示文字 -->
+            <div id="tutorial-overlay" class="absolute inset-0 flex items-center justify-center pointer-events-none transition-opacity duration-500 z-50">
+                <div class="bg-black/60 backdrop-blur-sm text-white px-6 py-4 rounded-lg border border-white/20 shadow-2xl">
+                    <p class="text-lg font-medium flex items-center gap-2">
+                        <svg class="w-6 h-6 animate-bounce" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 11.5V14m0-2.5v-6a1.5 1.5 0 113 0m-3 6a1.5 1.5 0 00-3 0v2a7.5 7.5 0 0015 0v-5a1.5 1.5 0 00-3 0m-6-3V11m0-5.5v-1a1.5 1.5 0 013 0v1m0 0V11m0-5.5a1.5 1.5 0 013 0v3m0 0V11"></path></svg>
+                        拖动鼠标/手指开始撕开照片
+                    </p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 底部操作栏 -->
+    <div id="action-bar" class="fixed bottom-6 flex gap-4 hidden z-50">
+        <button onclick="resetCanvas()" class="px-6 py-3 bg-gray-800 hover:bg-gray-700 text-white rounded-full shadow-lg border border-gray-600 flex items-center gap-2 transition">
+            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
+            重置 (Reset)
+        </button>
+        <button onclick="downloadImage()" class="px-6 py-3 bg-green-700 hover:bg-green-600 text-white rounded-full shadow-lg border border-green-500 flex items-center gap-2 transition">
+            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>
+            下载结果
+        </button>
+    </div>
+
+    <!-- 自定义光标跟随 -->
+    <div id="cursor-follower" class="brush-cursor"></div>
+
+    <script>
+        // 全局状态
+        const state = {
+            topImg: null,
+            bottomImg: null,
+            isDrawing: false,
+            lastPoint: null,
+            brushSize: 40, // 撕痕粗细
+            tearPaperWidth: 8 // 白边宽度
+        };
+
+        // DOM 元素
+        const els = {
+            inputTop: document.getElementById('input-top'),
+            inputBottom: document.getElementById('input-bottom'),
+            previewTop: document.getElementById('preview-top'),
+            previewBottom: document.getElementById('preview-bottom'),
+            startBtn: document.getElementById('start-btn'),
+            stageContainer: document.getElementById('stage-container'),
+            canvasStage: document.getElementById('canvas-stage'),
+            canvas: document.getElementById('top-layer'),
+            bottomLayerImg: document.getElementById('bottom-layer'),
+            textTop: document.getElementById('text-top'),
+            textBottom: document.getElementById('text-bottom'),
+            actionBar: document.getElementById('action-bar'),
+            tutorial: document.getElementById('tutorial-overlay'),
+            cursor: document.getElementById('cursor-follower')
+        };
+
+        // 1. 处理文件上传
+        function handleFileSelect(input, type) {
+            const file = input.files[0];
+            if (!file) return;
+
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                const img = new Image();
+                img.onload = function() {
+                    if (type === 'top') {
+                        state.topImg = img;
+                        els.previewTop.src = e.target.result;
+                        els.previewTop.style.opacity = '1';
+                        els.textTop.textContent = file.name;
+                    } else {
+                        state.bottomImg = img;
+                        els.previewBottom.src = e.target.result;
+                        els.previewBottom.style.opacity = '1';
+                        els.textBottom.textContent = file.name;
+                    }
+                    checkReady();
+                };
+                img.src = e.target.result;
+            };
+            reader.readAsDataURL(file);
+        }
+
+        function checkReady() {
+            if (state.topImg && state.bottomImg) {
+                els.startBtn.disabled = false;
+                els.startBtn.classList.remove('opacity-50');
+            }
+        }
+
+        // 2. 初始化画板
+        function initStage() {
+            if (!state.topImg || !state.bottomImg) return;
+
+            // 隐藏上传区，显示舞台
+            document.getElementById('upload-controls').style.display = 'none';
+            els.startBtn.style.display = 'none';
+            els.stageContainer.classList.remove('hidden');
+            els.actionBar.classList.remove('hidden');
+            els.canvasStage.style.display = 'block';
+
+            // 1. 计算目标分辨率 (限制最大 1024x1024)
+            const MAX_SIZE = 1024;
+            let w = state.topImg.width;
+            let h = state.topImg.height;
+            
+            // 如果图片超过限制，计算缩放比例
+            if (w > MAX_SIZE || h > MAX_SIZE) {
+                const ratio = Math.min(MAX_SIZE / w, MAX_SIZE / h);
+                w = Math.floor(w * ratio);
+                h = Math.floor(h * ratio);
+            }
+
+            // 2. 设置 Canvas 内部物理分辨率 (缓冲区大小)
+            els.canvas.width = w;
+            els.canvas.height = h;
+
+            // 3. 设置显示尺寸 (响应式)
+            // 容器宽度占满屏幕，但最大不超过图片的物理宽度
+            els.canvasStage.style.width = '100%';
+            els.canvasStage.style.maxWidth = w + 'px';
+            // 使用 CSS aspect-ratio 自动计算高度，确保在手机缩放时不变形
+            els.canvasStage.style.aspectRatio = `${w} / ${h}`;
+            els.canvasStage.style.height = 'auto'; 
+
+            // 4. 确保 Canvas 元素填满容器
+            els.canvas.style.width = '100%';
+            els.canvas.style.height = '100%';
+
+            // 绘制表层图片
+            resetCanvas();
+
+            // 设置底层图片
+            els.bottomLayerImg.src = state.bottomImg.src;
+
+            // 添加事件监听
+            setupInteractions();
+        }
+
+        function resetCanvas() {
+            const ctx = els.canvas.getContext('2d');
+            ctx.globalCompositeOperation = 'source-over';
+            ctx.clearRect(0, 0, els.canvas.width, els.canvas.height);
+            ctx.drawImage(state.topImg, 0, 0, els.canvas.width, els.canvas.height);
+            
+            // 显示教程遮罩
+            els.tutorial.style.opacity = '1';
+            setTimeout(() => {
+                 els.tutorial.style.opacity = '0'; // 3秒后自动淡出，或者用户交互时淡出
+            }, 3000);
+        }
+
+        // 3. 撕纸核心逻辑
+        function getBrushShape(radius) {
+            // 生成一个不规则的多边形路径，模拟纸张撕裂的随机性
+            // 返回一组相对于中心点的 (x, y) 坐标
+            const points = [];
+            const segments = 20; // 圆周分段数
+            for (let i = 0; i <= segments; i++) {
+                const theta = (i / segments) * Math.PI * 2;
+                // 随机半径，产生锯齿感
+                const r = radius * (0.8 + Math.random() * 0.4); 
+                points.push({
+                    x: Math.cos(theta) * r,
+                    y: Math.sin(theta) * r
+                });
+            }
+            return points;
+        }
+
+        function drawTear(ctx, x, y) {
+            // 隐藏教程
+            els.tutorial.style.opacity = '0';
+
+            const brushRadius = state.brushSize;
+            
+            // 核心修复逻辑：
+            // 我们不再简单的叠加绘制。
+            // 1. 使用 'source-atop' 绘制白边：确保白色只染在"由于还未被撕掉而存在的图片"上。
+            //    如果画在已经是透明的区域，source-atop 模式不会留下任何痕迹。
+            // 2. 使用 'destination-out' 挖洞：把中间擦除。
+            
+            // 生成随机形状
+            const outerShape = getBrushShape(brushRadius);
+            const innerRadius = Math.max(5, brushRadius - state.tearPaperWidth);
+            const innerShape = getBrushShape(innerRadius);
+
+            ctx.save();
+
+            // 第一步：绘制白边 (Paper Fiber)
+            // 关键点：source-atop
+            // "The new shape is only drawn where it overlaps the existing canvas content."
+            ctx.globalCompositeOperation = 'source-atop';
+            ctx.fillStyle = '#f3f3f3'; 
+            
+            // 注意：我们去掉了 ctx.shadowColor 等属性。
+            // 因为阴影现在由 CSS drop-shadow 统一管理，避免了笔触重叠时的阴影脏点。
+
+            ctx.beginPath();
+            ctx.moveTo(x + outerShape[0].x, y + outerShape[0].y);
+            for(let p of outerShape) {
+                ctx.lineTo(x + p.x, y + p.y);
+            }
+            ctx.closePath();
+            ctx.fill();
+
+            // 第二步：挖洞 (Tear Hole)
+            ctx.globalCompositeOperation = 'destination-out';
+            ctx.fillStyle = '#000'; // 颜色不重要，重要的是把 alpha 变成 0
+            
+            ctx.beginPath();
+            ctx.moveTo(x + innerShape[0].x, y + innerShape[0].y);
+            for(let p of innerShape) {
+                ctx.lineTo(x + p.x, y + p.y);
+            }
+            ctx.closePath();
+            ctx.fill();
+
+            ctx.restore();
+        }
+
+        function handleMove(e) {
+            if (!state.isDrawing) return;
+            e.preventDefault(); // 防止手机滚动
+
+            // 获取坐标
+            const rect = els.canvas.getBoundingClientRect();
+            const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+            const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+            
+            // 考虑 Canvas 的缩放比例 (CSS像素 vs Canvas 实际像素)
+            const scaleX = els.canvas.width / rect.width;
+            const scaleY = els.canvas.height / rect.height;
+
+            const x = (clientX - rect.left) * scaleX;
+            const y = (clientY - rect.top) * scaleY;
+
+            const ctx = els.canvas.getContext('2d');
+
+            // 插值算法：防止快速移动时出现断层
+            if (state.lastPoint) {
+                const dist = Math.hypot(x - state.lastPoint.x, y - state.lastPoint.y);
+                const angle = Math.atan2(y - state.lastPoint.y, x - state.lastPoint.x);
+                // 每隔 5 像素绘制一次
+                const step = 5; 
+                for (let i = 0; i < dist; i += step) {
+                    const interpX = state.lastPoint.x + Math.cos(angle) * i;
+                    const interpY = state.lastPoint.y + Math.sin(angle) * i;
+                    drawTear(ctx, interpX, interpY);
+                }
+            }
+            
+            drawTear(ctx, x, y);
+            state.lastPoint = { x, y };
+        }
+
+        function setupInteractions() {
+            const c = els.canvas;
+
+            // 鼠标事件
+            c.addEventListener('mousedown', (e) => {
+                state.isDrawing = true;
+                state.lastPoint = null;
+                handleMove(e);
+            });
+            window.addEventListener('mousemove', handleMove); // 移出canvas也能继续撕一小段
+            window.addEventListener('mouseup', () => {
+                state.isDrawing = false;
+                state.lastPoint = null;
+            });
+
+            // 触摸事件
+            c.addEventListener('touchstart', (e) => {
+                state.isDrawing = true;
+                state.lastPoint = null;
+                handleMove(e);
+            }, { passive: false });
+            c.addEventListener('touchmove', handleMove, { passive: false });
+            window.addEventListener('touchend', () => {
+                state.isDrawing = false;
+                state.lastPoint = null;
+            });
+
+            // 鼠标跟随效果 (仅桌面)
+            document.addEventListener('mousemove', (e) => {
+                if(window.innerWidth > 768) {
+                    els.cursor.style.display = 'block';
+                    els.cursor.style.left = e.clientX + 'px';
+                    els.cursor.style.top = e.clientY + 'px';
+                }
+            });
+        }
+
+        // 4. 合成并下载图片
+        function downloadImage() {
+            // 创建一个临时 Canvas 来合成两张图
+            const tempCanvas = document.createElement('canvas');
+            tempCanvas.width = els.canvas.width;
+            tempCanvas.height = els.canvas.height;
+            const ctx = tempCanvas.getContext('2d');
+
+            // 1. 绘制底图
+            // ... (保持原有的底图计算逻辑)
+            const w = tempCanvas.width;
+            const h = tempCanvas.height;
+            const imgW = state.bottomImg.width;
+            const imgH = state.bottomImg.height;
+            const ratio = w / h;
+            const imgRatio = imgW / imgH;
+            
+            let drawW, drawH, drawX, drawY;
+
+            if (imgRatio > ratio) {
+                drawH = h;
+                drawW = imgRatio * h;
+                drawY = 0;
+                drawX = (w - drawW) / 2;
+            } else {
+                drawW = w;
+                drawH = w / imgRatio;
+                drawX = 0;
+                drawY = (h - drawH) / 2;
+            }
+            
+            ctx.drawImage(state.bottomImg, drawX, drawY, drawW, drawH);
+
+            // 2. 绘制顶层 Canvas
+            // 因为我们把网页显示的阴影移到了 CSS 里，下载时 CSS 效果不会自动带入 Canvas。
+            // 所以我们需要在合成时手动加一次投影，让下载的图片也有立体感。
+            ctx.save();
+            ctx.shadowColor = "rgba(0, 0, 0, 0.5)";
+            ctx.shadowBlur = 10;
+            ctx.shadowOffsetX = 2;
+            ctx.shadowOffsetY = 4;
+            
+            ctx.drawImage(els.canvas, 0, 0);
+            ctx.restore();
+
+            // 下载
+            const link = document.createElement('a');
+            link.download = 'torn-paper-art.png';
+            link.href = tempCanvas.toDataURL('image/png');
+            link.click();
+        }
+
+    </script>
+</body>
+</html>
